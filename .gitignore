@@ -1,0 +1,10 @@
+# node
+node_modules
+npm-debug.log*
+package-lock.json
+
+# segredos
+.env
+service-account.json
+*.key
+*.pem
