@@ -6,7 +6,9 @@ import admin from 'firebase-admin';
 import { criarPagamentoPix, obterPagamento } from './services/mercadopago.js';
 import { marcarFaturaPaga } from './lib/firestore.js';
 
+//
 // 🟡 Inicializa Firebase Admin com segurança
+//
 let serviceAccount;
 try {
     if (!process.env.FIREBASE_ADMIN_KEY) {
@@ -22,22 +24,45 @@ try {
     process.exit(1);
 }
 
+//
+// 🌐 Configuração do Express + CORS
+//
 const app = express();
 
-// ✅ Configuração CORS
-app.use(cors({
-    origin: [
-        'http://localhost:3000',
-        'https://gestaobancar.vercel.app'
-    ],
-    methods: ['GET', 'POST', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
-}));
-app.options('*', cors());
+const allowedOrigins = [
+    'http://localhost:3000',
+    'https://gestaobancar.vercel.app',
+];
 
+app.use(
+    cors({
+        origin: (origin, callback) => {
+            if (!origin || allowedOrigins.includes(origin)) {
+                callback(null, true);
+            } else {
+                console.log('🚫 CORS bloqueado para:', origin);
+                callback(new Error('CORS não permitido'));
+            }
+        },
+        methods: ['GET', 'POST', 'OPTIONS'],
+        allowedHeaders: ['Content-Type', 'Authorization'],
+    })
+);
+
+app.options('*', cors());
 app.use(express.json());
 
+//
+// 🌐 Log da origem para debug
+//
+app.use((req, _res, next) => {
+    console.log('🌐 Origem da requisição:', req.headers.origin);
+    next();
+});
+
+//
 // 📝 Logs de requisição
+//
 app.use((req, res, next) => {
     const inicio = Date.now();
     res.on('finish', () => {
@@ -46,7 +71,9 @@ app.use((req, res, next) => {
     next();
 });
 
+//
 // 🛡️ Middleware de autenticação Firebase
+//
 async function autenticarFirebase(req, res, next) {
     try {
         const authHeader = req.headers.authorization;
@@ -64,10 +91,14 @@ async function autenticarFirebase(req, res, next) {
     }
 }
 
+//
 // 🌡️ Healthcheck
+//
 app.get('/health', (_req, res) => res.json({ ok: true, service: 'pix-api' }));
 
-// 🔐 Verificação rápida do ambiente (debug)
+//
+// 🧪 Debug do ambiente
+//
 app.get('/env-check', (_req, res) => {
     res.json({
         mpToken: !!process.env.MERCADO_PAGO_ACCESS_TOKEN,
@@ -76,7 +107,9 @@ app.get('/env-check', (_req, res) => {
     });
 });
 
+//
 // 💳 Criar cobrança Pix (protegido)
+//
 app.post('/api/pix', autenticarFirebase, async (req, res) => {
     try {
         const { faturaId, descricao, valor, payerName, payerCpf, payerEmail } = req.body || {};
@@ -111,7 +144,17 @@ app.post('/api/pix', autenticarFirebase, async (req, res) => {
     }
 });
 
+//
+// 🔀 Rota alternativa /pix (sem /api) — compatibilidade com front antigo
+//
+app.post('/pix', autenticarFirebase, (req, res) => {
+    req.url = '/api/pix';
+    app._router.handle(req, res);
+});
+
+//
 // 📡 Consultar status (protegido)
+//
 app.get('/pix/status/:paymentId', autenticarFirebase, async (req, res) => {
     try {
         const pay = await obterPagamento(req.params.paymentId);
@@ -121,7 +164,9 @@ app.get('/pix/status/:paymentId', autenticarFirebase, async (req, res) => {
     }
 });
 
+//
 // 🌐 Webhook Mercado Pago (sem autenticação — chamado pelo MP)
+//
 app.post('/webhook/mercadopago', async (req, res) => {
     try {
         const { type, data } = req.body || {};
@@ -154,6 +199,8 @@ app.post('/webhook/mercadopago', async (req, res) => {
     }
 });
 
-// 🚀 Start
+//
+// 🚀 Start Server
+//
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`✅ PIX API rodando na porta ${PORT}`));
