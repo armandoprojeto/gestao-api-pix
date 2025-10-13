@@ -2,12 +2,38 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import admin from 'firebase-admin';
 import { criarPagamentoPix, obterPagamento } from './services/mercadopago.js';
 import { marcarFaturaPaga } from './lib/firestore.js';
 
 const app = express();
 app.use(cors({ origin: '*' }));
 app.use(express.json());
+
+// ✅ Inicializa Firebase Admin
+if (!admin.apps.length) {
+    const serviceAccount = JSON.parse(process.env.FIREBASE_ADMIN_KEY);
+    admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount),
+    });
+}
+
+// 🧠 Middleware de autenticação Firebase
+async function autenticarFirebase(req, res, next) {
+    try {
+        const authHeader = req.headers.authorization || '';
+        if (!authHeader.startsWith('Bearer ')) {
+            return res.status(401).json({ error: 'Token ausente ou inválido' });
+        }
+        const token = authHeader.split('Bearer ')[1];
+        const decoded = await admin.auth().verifyIdToken(token);
+        req.user = decoded;
+        next();
+    } catch (error) {
+        console.error('Erro de autenticação Firebase:', error);
+        return res.status(401).json({ error: 'Não autorizado' });
+    }
+}
 
 // Logs de requisição
 app.use((req, res, next) => {
@@ -31,7 +57,7 @@ app.get('/env-check', (_req, res) => {
     });
 });
 
-// Criar cobrança PIX
+// Criar cobrança PIX (Handler)
 async function handleCriarPix(req, res) {
     try {
         const {
@@ -65,14 +91,14 @@ async function handleCriarPix(req, res) {
     }
 }
 
-// Rotas para criar PIX (compatibilidade)
-app.post('/pix/criar', handleCriarPix);
-app.post('/pix/gerar', handleCriarPix);
-app.post('/api/pix/gerar', handleCriarPix);
-app.post('/api/pix', handleCriarPix);
+// 🛡️ Rotas protegidas
+app.post('/pix/criar', autenticarFirebase, handleCriarPix);
+app.post('/pix/gerar', autenticarFirebase, handleCriarPix);
+app.post('/api/pix/gerar', autenticarFirebase, handleCriarPix);
+app.post('/api/pix', autenticarFirebase, handleCriarPix);
 
-// Consultar status manualmente
-app.get('/pix/status/:paymentId', async (req, res) => {
+// Consultar status manualmente (também protegido)
+app.get('/pix/status/:paymentId', autenticarFirebase, async (req, res) => {
     try {
         const pay = await obterPagamento(req.params.paymentId);
         res.json({ ok: true, status: pay.status, detail: pay.status_detail, data: pay });
@@ -81,7 +107,7 @@ app.get('/pix/status/:paymentId', async (req, res) => {
     }
 });
 
-// Webhook Mercado Pago
+// Webhook Mercado Pago (sem autenticação, é chamado pelo MP)
 app.post('/webhook/mercadopago', async (req, res) => {
     try {
         const { type, data } = req.body || {};
