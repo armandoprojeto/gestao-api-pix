@@ -4,10 +4,9 @@ import express from 'express';
 import cors from 'cors';
 import admin from 'firebase-admin';
 import { criarPagamentoPix, obterPagamento } from './services/mercadopago.js';
-import { marcarFaturaPaga } from './lib/firestore.js';
 
 //
-// 🟡 Inicializa Firebase Admin com segurança
+// 🔑 Inicializa Firebase Admin
 //
 let serviceAccount;
 try {
@@ -24,44 +23,25 @@ try {
     process.exit(1);
 }
 
-//
-// 🌐 Configuração do Express + CORS
-//
+const db = admin.firestore();
 const app = express();
 
-const allowedOrigins = [
-    'http://localhost:3000',
-    'https://gestaobancar.vercel.app',
-];
-
-app.use(
-    cors({
-        origin: (origin, callback) => {
-            if (!origin || allowedOrigins.includes(origin)) {
-                callback(null, true);
-            } else {
-                console.log('🚫 CORS bloqueado para:', origin);
-                callback(new Error('CORS não permitido'));
-            }
-        },
-        methods: ['GET', 'POST', 'OPTIONS'],
-        allowedHeaders: ['Content-Type', 'Authorization'],
-    })
-);
-
+//
+// 🌐 CORS
+//
+app.use(cors({
+    origin: [
+        'http://localhost:3000',
+        'https://gestaobancar.vercel.app'
+    ],
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.options('*', cors());
 app.use(express.json());
 
 //
-// 🌐 Log da origem para debug
-//
-app.use((req, _res, next) => {
-    console.log('🌐 Origem da requisição:', req.headers.origin);
-    next();
-});
-
-//
-// 📝 Logs de requisição
+// 📝 Logger
 //
 app.use((req, res, next) => {
     const inicio = Date.now();
@@ -72,7 +52,7 @@ app.use((req, res, next) => {
 });
 
 //
-// 🛡️ Middleware de autenticação Firebase
+// 🛡️ Middleware Firebase Auth
 //
 async function autenticarFirebase(req, res, next) {
     try {
@@ -80,7 +60,6 @@ async function autenticarFirebase(req, res, next) {
         if (!authHeader || !authHeader.startsWith('Bearer ')) {
             return res.status(401).json({ ok: false, msg: 'Token ausente ou inválido' });
         }
-
         const token = authHeader.split(' ')[1];
         const decoded = await admin.auth().verifyIdToken(token);
         req.user = decoded;
@@ -97,7 +76,7 @@ async function autenticarFirebase(req, res, next) {
 app.get('/health', (_req, res) => res.json({ ok: true, service: 'pix-api' }));
 
 //
-// 🧪 Debug do ambiente
+// 🔐 Checagem de env
 //
 app.get('/env-check', (_req, res) => {
     res.json({
@@ -108,18 +87,14 @@ app.get('/env-check', (_req, res) => {
 });
 
 //
-// 💳 Criar cobrança Pix (protegido)
+// 💳 Criar cobrança PIX
 //
 app.post('/api/pix', autenticarFirebase, async (req, res) => {
     try {
         const { faturaId, descricao, valor, payerName, payerCpf, payerEmail } = req.body || {};
-
         if (!faturaId || typeof valor !== 'number') {
             return res.status(400).json({ ok: false, msg: 'faturaId e valor numérico são obrigatórios' });
         }
-
-        const uid = req.user.uid;
-        console.log('💰 Criando cobrança para UID:', uid);
 
         const pagamento = await criarPagamentoPix({
             faturaId,
@@ -145,15 +120,7 @@ app.post('/api/pix', autenticarFirebase, async (req, res) => {
 });
 
 //
-// 🔀 Rota alternativa /pix (sem /api) — compatibilidade com front antigo
-//
-app.post('/pix', autenticarFirebase, (req, res) => {
-    req.url = '/api/pix';
-    app._router.handle(req, res);
-});
-
-//
-// 📡 Consultar status (protegido)
+// 📡 Consultar status PIX
 //
 app.get('/pix/status/:paymentId', autenticarFirebase, async (req, res) => {
     try {
@@ -165,11 +132,12 @@ app.get('/pix/status/:paymentId', autenticarFirebase, async (req, res) => {
 });
 
 //
-// 🌐 Webhook Mercado Pago (sem autenticação — chamado pelo MP)
+// 🌐 Webhook Mercado Pago
 //
 app.post('/webhook/mercadopago', async (req, res) => {
     try {
         const { type, data } = req.body || {};
+
         if (type === 'payment' && data?.id) {
             const pay = await obterPagamento(data.id);
             console.log('[webhook] pagamento recebido:', data.id, pay.status);
@@ -181,17 +149,41 @@ app.post('/webhook/mercadopago', async (req, res) => {
                     pay.metadata?.faturaId ||
                     pay.external_reference;
 
-                await marcarFaturaPaga({
-                    faturaId,
+                console.log(`✅ Pagamento aprovado | Fatura: ${faturaId} | Valor: R$${valorPago}`);
+
+                // Atualiza fatura no Firestore
+                await db.collection('faturas').doc(faturaId).set({
+                    status: 'pago',
                     paymentId: pay.id,
                     valorPago,
-                    aprovadoEmISO: pay.date_approved,
-                    raw: pay,
-                });
+                    aprovadoEm: new Date(pay.date_approved),
+                }, { merge: true });
 
-                console.log('[webhook] ✅ Fatura marcada como paga:', faturaId);
+                // Extrai UID do faturaId (você salvou userId na fatura no frontend)
+                const faturaSnap = await db.collection('faturas').doc(faturaId).get();
+                const faturaData = faturaSnap.data();
+                const userId = faturaData?.userId;
+                const plano = faturaData?.plano;
+                const valorPlano = faturaData?.valor;
+
+                if (userId) {
+                    const hoje = new Date();
+                    const venc = new Date();
+                    venc.setDate(venc.getDate() + 30); // mensal, ajuste se quiser
+
+                    await db.collection('usuarios').doc(userId).set({
+                        status: 'Ativo',
+                        plano: plano || 'Mensal',
+                        valorPlano: valorPlano || valorPago,
+                        dataPagamento: hoje,
+                        dataVencimento: venc,
+                    }, { merge: true });
+
+                    console.log(`👤 Usuário ${userId} ativado com plano ${plano}`);
+                }
             }
         }
+
         res.sendStatus(200);
     } catch (e) {
         console.error('[webhook] erro:', e.message);
@@ -200,7 +192,7 @@ app.post('/webhook/mercadopago', async (req, res) => {
 });
 
 //
-// 🚀 Start Server
+// 🚀 Start
 //
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`✅ PIX API rodando na porta ${PORT}`));
