@@ -6,21 +6,33 @@ import admin from 'firebase-admin';
 import { criarPagamentoPix, obterPagamento } from './services/mercadopago.js';
 import { marcarFaturaPaga } from './lib/firestore.js';
 
-// 🟡 Inicializa Firebase Admin com a chave do .env
-const serviceAccount = JSON.parse(process.env.FIREBASE_ADMIN_KEY);
-admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
-});
+// 🟡 Inicializa Firebase Admin com segurança
+let serviceAccount;
+try {
+    if (!process.env.FIREBASE_ADMIN_KEY) {
+        throw new Error('FIREBASE_ADMIN_KEY ausente nas variáveis de ambiente.');
+    }
+    serviceAccount = JSON.parse(process.env.FIREBASE_ADMIN_KEY);
+    admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount),
+    });
+    console.log('✅ Firebase Admin inicializado com sucesso.');
+} catch (err) {
+    console.error('❌ Erro ao inicializar Firebase Admin:', err.message);
+    process.exit(1); // encerra se a chave for inválida ou inexistente
+}
 
 const app = express();
 app.use(cors({ origin: '*' }));
 app.use(express.json());
 
-// 📝 Logs de requisição para monitorar tudo
+// 📝 Logs de requisição
 app.use((req, res, next) => {
     const inicio = Date.now();
     res.on('finish', () => {
-        console.log(`[req] ${req.method} ${req.originalUrl} -> ${res.statusCode} (${Date.now() - inicio}ms)`);
+        console.log(
+            `[req] ${req.method} ${req.originalUrl} -> ${res.statusCode} (${Date.now() - inicio}ms)`
+        );
     });
     next();
 });
@@ -35,7 +47,7 @@ async function autenticarFirebase(req, res, next) {
 
         const token = authHeader.split(' ')[1];
         const decoded = await admin.auth().verifyIdToken(token);
-        req.user = decoded; // ✅ Agora req.user tem UID, email etc.
+        req.user = decoded; // ✅ UID, email, etc
         next();
     } catch (e) {
         console.error('[auth error]', e.message);
@@ -46,7 +58,7 @@ async function autenticarFirebase(req, res, next) {
 // 🌡️ Healthcheck
 app.get('/health', (_req, res) => res.json({ ok: true, service: 'pix-api' }));
 
-// 🔐 Verificação rápida do .env (para debug)
+// 🔐 Verificação rápida do ambiente (debug)
 app.get('/env-check', (_req, res) => {
     res.json({
         mpToken: !!process.env.MERCADO_PAGO_ACCESS_TOKEN,
@@ -55,24 +67,25 @@ app.get('/env-check', (_req, res) => {
     });
 });
 
-// 💳 Criar cobrança Pix (rota protegida)
+// 💳 Criar cobrança Pix (protegido)
 app.post('/api/pix', autenticarFirebase, async (req, res) => {
     try {
-        const {
-            faturaId, descricao, valor,
-            payerName, payerCpf, payerEmail
-        } = req.body || {};
+        const { faturaId, descricao, valor, payerName, payerCpf, payerEmail } = req.body || {};
 
         if (!faturaId || typeof valor !== 'number') {
             return res.status(400).json({ ok: false, msg: 'faturaId e valor numérico são obrigatórios' });
         }
 
-        // 🔐 UID autenticado vem do token
         const uid = req.user.uid;
         console.log('💰 Criando cobrança para UID:', uid);
 
         const pagamento = await criarPagamentoPix({
-            faturaId, descricao, valor, payerName, payerCpf, payerEmail
+            faturaId,
+            descricao,
+            valor,
+            payerName,
+            payerCpf,
+            payerEmail,
         });
 
         return res.json({
@@ -89,7 +102,7 @@ app.post('/api/pix', autenticarFirebase, async (req, res) => {
     }
 });
 
-// 📡 Consultar status manualmente (proteção opcional)
+// 📡 Consultar status (protegido)
 app.get('/pix/status/:paymentId', autenticarFirebase, async (req, res) => {
     try {
         const pay = await obterPagamento(req.params.paymentId);
@@ -99,7 +112,7 @@ app.get('/pix/status/:paymentId', autenticarFirebase, async (req, res) => {
     }
 });
 
-// 🌐 Webhook do Mercado Pago (não precisa autenticar — MP que chama)
+// 🌐 Webhook Mercado Pago (sem autenticação — chamado pelo MP)
 app.post('/webhook/mercadopago', async (req, res) => {
     try {
         const { type, data } = req.body || {};
@@ -132,6 +145,6 @@ app.post('/webhook/mercadopago', async (req, res) => {
     }
 });
 
-// 🚀 Start server
+// 🚀 Start
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`✅ PIX API rodando na porta ${PORT}`));
