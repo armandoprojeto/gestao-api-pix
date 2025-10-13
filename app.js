@@ -19,20 +19,29 @@ try {
     console.log('✅ Firebase Admin inicializado com sucesso.');
 } catch (err) {
     console.error('❌ Erro ao inicializar Firebase Admin:', err.message);
-    process.exit(1); // encerra se a chave for inválida ou inexistente
+    process.exit(1);
 }
 
 const app = express();
-app.use(cors({ origin: '*' }));
+
+// ✅ Configuração CORS
+app.use(cors({
+    origin: [
+        'http://localhost:3000',
+        'https://gestaobancar.vercel.app'
+    ],
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
+app.options('*', cors());
+
 app.use(express.json());
 
 // 📝 Logs de requisição
 app.use((req, res, next) => {
     const inicio = Date.now();
     res.on('finish', () => {
-        console.log(
-            `[req] ${req.method} ${req.originalUrl} -> ${res.statusCode} (${Date.now() - inicio}ms)`
-        );
+        console.log(`[req] ${req.method} ${req.originalUrl} -> ${res.statusCode} (${Date.now() - inicio}ms)`);
     });
     next();
 });
@@ -47,7 +56,7 @@ async function autenticarFirebase(req, res, next) {
 
         const token = authHeader.split(' ')[1];
         const decoded = await admin.auth().verifyIdToken(token);
-        req.user = decoded; // ✅ UID, email, etc
+        req.user = decoded;
         next();
     } catch (e) {
         console.error('[auth error]', e.message);
