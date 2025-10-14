@@ -5,6 +5,22 @@ import { obterPagamento } from "../services/mercadopago.js";
 const router = express.Router();
 const db = getFirestore();
 
+/**
+ * 📅 Calcula a data de vencimento baseado no plano
+ */
+function calcularVencimento(plano) {
+    const diasPorPlano = {
+        Mensal: 30,
+        Trimestral: 90,
+        Semestral: 180,
+        Anual: 365,
+    };
+
+    const dias = diasPorPlano[plano] || 30;
+    const venc = new Date();
+    venc.setDate(venc.getDate() + dias);
+    return venc;
+}
 
 // 🚨 Webhook Mercado Pago
 router.post("/webhook/mercadopago", async (req, res) => {
@@ -29,13 +45,17 @@ router.post("/webhook/mercadopago", async (req, res) => {
 
                 // 👤 Atualiza o usuário para liberar acesso
                 const faturaSnap = await faturaRef.get();
-                const { userId } = faturaSnap.data();
+                const faturaData = faturaSnap.data();
 
-                if (userId) {
-                    await db.collection("usuarios").doc(userId).update({
-                        planoPago: true,
-                        planoAtivoEm: new Date(),
-                    });
+                if (faturaData?.userId) {
+                    const vencimento = calcularVencimento(faturaData.plano);
+                    await db.collection("usuarios").doc(faturaData.userId).set({
+                        status: "pago",
+                        plano: faturaData.plano,
+                        valorPlano: faturaData.valor,
+                        dataPagamento: new Date(),
+                        dataVencimento: vencimento,
+                    }, { merge: true });
                 }
 
                 console.log(`✅ Pagamento confirmado via MP! Fatura: ${faturaId}`);
@@ -84,15 +104,15 @@ router.post("/webhook/pix", async (req, res) => {
 
             // 👤 Atualiza usuário vinculado
             if (faturaData.userId) {
-                const vencimento = new Date();
-                vencimento.setDate(vencimento.getDate() + 30); // exemplo: 30 dias de acesso
+                const vencimento = calcularVencimento(faturaData.plano);
 
-                await db.collection("usuarios").doc(faturaData.userId).update({
+                await db.collection("usuarios").doc(faturaData.userId).set({
                     status: "pago",
                     plano: faturaData.plano,
+                    valorPlano: faturaData.valor,
                     dataPagamento: new Date(),
                     dataVencimento: vencimento,
-                });
+                }, { merge: true });
             }
 
             console.log(`✅ Pagamento PIX confirmado! Fatura: ${faturaId}`);
