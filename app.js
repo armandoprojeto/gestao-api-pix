@@ -41,7 +41,7 @@ app.options('*', cors());
 app.use(express.json());
 
 //
-// 📝 Logger
+// 📝 Logger de requisições
 //
 app.use((req, res, next) => {
     const inicio = Date.now();
@@ -60,7 +60,12 @@ async function autenticarFirebase(req, res, next) {
         if (!authHeader || !authHeader.startsWith('Bearer ')) {
             return res.status(401).json({ ok: false, msg: 'Token ausente ou inválido' });
         }
+
         const token = authHeader.split(' ')[1];
+
+        // 🔍 Log para depuração
+        console.log('[auth] Token recebido:', token.substring(0, 20) + '...');
+
         const decoded = await admin.auth().verifyIdToken(token);
         req.user = decoded;
         next();
@@ -76,7 +81,7 @@ async function autenticarFirebase(req, res, next) {
 app.get('/health', (_req, res) => res.json({ ok: true, service: 'pix-api' }));
 
 //
-// 🔐 Checagem de env
+// 🔐 Checagem de variáveis de ambiente
 //
 app.get('/env-check', (_req, res) => {
     res.json({
@@ -120,13 +125,23 @@ app.post('/api/pix', autenticarFirebase, async (req, res) => {
 });
 
 //
-// 📡 Consultar status PIX
+// 📡 Consultar status PIX (com autenticação)
 //
 app.get('/pix/status/:paymentId', autenticarFirebase, async (req, res) => {
     try {
-        const pay = await obterPagamento(req.params.paymentId);
-        res.json({ ok: true, status: pay.status, detail: pay.status_detail, data: pay });
+        const { paymentId } = req.params;
+        console.log(`🔍 Consultando status do pagamento: ${paymentId}`);
+
+        const pay = await obterPagamento(paymentId);
+
+        res.json({
+            ok: true,
+            status: pay.status,
+            detail: pay.status_detail,
+            data: pay
+        });
     } catch (e) {
+        console.error('[pix/status] erro:', e.message);
         res.status(400).json({ ok: false, msg: e.message });
     }
 });
@@ -159,7 +174,7 @@ app.post('/webhook/mercadopago', async (req, res) => {
                     aprovadoEm: new Date(pay.date_approved),
                 }, { merge: true });
 
-                // Extrai UID do faturaId (você salvou userId na fatura no frontend)
+                // Extrai UID do userId salvo na fatura
                 const faturaSnap = await db.collection('faturas').doc(faturaId).get();
                 const faturaData = faturaSnap.data();
                 const userId = faturaData?.userId;
@@ -169,7 +184,7 @@ app.post('/webhook/mercadopago', async (req, res) => {
                 if (userId) {
                     const hoje = new Date();
                     const venc = new Date();
-                    venc.setDate(venc.getDate() + 30); // mensal, ajuste se quiser
+                    venc.setDate(venc.getDate() + 30); // Mensal por padrão
 
                     await db.collection('usuarios').doc(userId).set({
                         status: 'Ativo',
