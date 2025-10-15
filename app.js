@@ -29,14 +29,16 @@ const app = express();
 //
 // 🌐 CORS
 //
-app.use(cors({
-    origin: [
-        'http://localhost:3000',
-        'https://gestaobancar.vercel.app'
-    ],
-    methods: ['GET', 'POST', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
-}));
+app.use(
+    cors({
+        origin: [
+            'http://localhost:3000',
+            'https://gestaobancar.vercel.app',
+        ],
+        methods: ['GET', 'POST', 'OPTIONS'],
+        allowedHeaders: ['Content-Type', 'Authorization'],
+    }),
+);
 app.options('*', cors());
 app.use(express.json());
 
@@ -46,7 +48,9 @@ app.use(express.json());
 app.use((req, res, next) => {
     const inicio = Date.now();
     res.on('finish', () => {
-        console.log(`[req] ${req.method} ${req.originalUrl} -> ${res.statusCode} (${Date.now() - inicio}ms)`);
+        console.log(
+            `[req] ${req.method} ${req.originalUrl} -> ${res.statusCode} (${Date.now() - inicio}ms)`,
+        );
     });
     next();
 });
@@ -138,7 +142,7 @@ app.get('/pix/status/:paymentId', autenticarFirebase, async (req, res) => {
             ok: true,
             status: pay.status,
             detail: pay.status_detail,
-            data: pay
+            data: pay,
         });
     } catch (e) {
         console.error('[pix/status] erro:', e.message);
@@ -147,26 +151,31 @@ app.get('/pix/status/:paymentId', autenticarFirebase, async (req, res) => {
 });
 
 //
-// 🌐 Webhook Mercado Pago
+// 🌐 Webhook Mercado Pago (robusto)
 //
 app.post('/webhook/mercadopago', async (req, res) => {
     try {
-        const { type, data } = req.body || {};
+        // MP novo (JSON) ou legado (query)
+        const type = req.body?.type || req.query?.type || req.query?.topic;
+        const paymentId =
+            req.body?.data?.id ||
+            req.query?.['data.id'] ||
+            req.query?.id;
 
-        if (type === 'payment' && data?.id) {
-            const pay = await obterPagamento(data.id);
-            console.log('[webhook] pagamento recebido:', data.id, pay.status);
+        if (type === 'payment' && paymentId) {
+            const pay = await obterPagamento(paymentId);
+            console.log('[webhook] pagamento recebido:', paymentId, pay.status);
 
             if (pay.status === 'approved') {
                 const valorPago = pay.transaction_amount;
                 const faturaId =
-                    pay.description?.replace('Fatura ', '') ||
                     pay.metadata?.faturaId ||
-                    pay.external_reference;
+                    pay.external_reference ||
+                    pay.description?.replace('Fatura ', '');
 
                 console.log(`✅ Pagamento aprovado | Fatura: ${faturaId} | Valor: R$${valorPago}`);
 
-                // Atualiza fatura no Firestore
+                // Atualiza fatura
                 await db.collection('faturas').doc(faturaId).set({
                     status: 'pago',
                     paymentId: pay.id,
@@ -174,7 +183,7 @@ app.post('/webhook/mercadopago', async (req, res) => {
                     aprovadoEm: new Date(pay.date_approved),
                 }, { merge: true });
 
-                // Extrai UID do userId salvo na fatura
+                // Atualiza usuário
                 const faturaSnap = await db.collection('faturas').doc(faturaId).get();
                 const faturaData = faturaSnap.data();
                 const userId = faturaData?.userId;
@@ -184,7 +193,7 @@ app.post('/webhook/mercadopago', async (req, res) => {
                 if (userId) {
                     const hoje = new Date();
                     const venc = new Date();
-                    venc.setDate(venc.getDate() + 30); // Mensal por padrão
+                    venc.setDate(venc.getDate() + 30);
 
                     await db.collection('usuarios').doc(userId).set({
                         status: 'Ativo',
@@ -194,7 +203,7 @@ app.post('/webhook/mercadopago', async (req, res) => {
                         dataVencimento: venc,
                     }, { merge: true });
 
-                    console.log(`👤 Usuário ${userId} ativado com plano ${plano}`);
+                    console.log(`👤 Usuário ${userId} ativado com plano ${plano || 'Mensal'}`);
                 }
             }
         }
@@ -202,7 +211,7 @@ app.post('/webhook/mercadopago', async (req, res) => {
         res.sendStatus(200);
     } catch (e) {
         console.error('[webhook] erro:', e.message);
-        res.sendStatus(200);
+        res.sendStatus(200); // MP só precisa de 200 para parar retries
     }
 });
 

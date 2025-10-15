@@ -1,6 +1,9 @@
 // services/mercadopago.js
 const MP_API = 'https://api.mercadopago.com';
 
+// URL do webhook (usa env var se existir; senão usa a do Railway)
+const NOTIFICATION_URL = (process.env.MP_WEBHOOK_URL || 'https://gestao-api-pix-production.up.railway.app/webhook/mercadopago').trim();
+
 function getToken() {
     return process.env.MERCADO_PAGO_ACCESS_TOKEN || '';
 }
@@ -43,7 +46,7 @@ export async function criarPagamentoPix({
         date_of_expiration: vencimentoISO || undefined,
         metadata: { faturaId },
         external_reference: externalReference || faturaId,
-        notification_url: process.env.MP_WEBHOOK_URL || undefined, // webhook do MP
+        notification_url: NOTIFICATION_URL, // ✅ AGORA APONTA PARA /webhook/mercadopago
     };
 
     const r = await fetchWithTimeout(`${MP_API}/v1/payments`, {
