@@ -196,7 +196,7 @@ app.post('/webhook/mercadopago', async (req, res) => {
                     venc.setDate(venc.getDate() + 30);
 
                     await db.collection('usuarios').doc(userId).set({
-                        status: 'Ativo',
+                        status: 'ativo',
                         plano: plano || 'Mensal',
                         valorPlano: valorPlano || valorPago,
                         dataPagamento: hoje,
