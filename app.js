@@ -10,11 +10,10 @@ import { criarPagamentoPix, obterPagamento } from './services/mercadopago.js';
 //
 let serviceAccount;
 try {
-    if (!process.env.CHAVE_ADMIN_FIREBASE) {
-        throw new Error('CHAVE_ADMIN_FIREBASE ausente nas variáveis de ambiente.');
+    if (!process.env.FIREBASE_ADMIN_KEY) {
+        throw new Error('FIREBASE_ADMIN_KEY ausente nas variáveis de ambiente.');
     }
-    serviceAccount = JSON.parse(process.env.CHAVE_ADMIN_FIREBASE);
-
+    serviceAccount = JSON.parse(process.env.FIREBASE_ADMIN_KEY);
     admin.initializeApp({
         credential: admin.credential.cert(serviceAccount),
     });
