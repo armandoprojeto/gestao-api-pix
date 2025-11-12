@@ -1,13 +1,27 @@
+// routes/webhook.js
 import express from "express";
-import { getFirestore } from "firebase-admin/firestore";
+import admin from "firebase-admin";
 import { obterPagamento } from "../services/mercadopago.js";
 
 const router = express.Router();
-const db = getFirestore();
 
-/**
- * 📅 Calcula a data de vencimento baseado no plano
- */
+/* =====================================================
+   🧠 Lazy init do Firestore (só inicializa se precisar)
+===================================================== */
+function getDb() {
+    if (!admin.apps.length) {
+        const serviceAccount = JSON.parse(process.env.FIREBASE_ADMIN_KEY);
+        admin.initializeApp({
+            credential: admin.credential.cert(serviceAccount),
+        });
+        console.log("🔥 Firebase Admin inicializado (lazy)");
+    }
+    return admin.firestore();
+}
+
+/* =====================================================
+   🧮 Função utilitária — calcular vencimento
+===================================================== */
 function calcularVencimento(plano) {
     const diasPorPlano = {
         Mensal: 30,
@@ -15,79 +29,113 @@ function calcularVencimento(plano) {
         Semestral: 180,
         Anual: 365,
     };
-
     const dias = diasPorPlano[plano] || 30;
     const venc = new Date();
     venc.setDate(venc.getDate() + dias);
     return venc;
 }
 
-// 🚨 Webhook Mercado Pago
+/* =====================================================
+   💳 Webhook Mercado Pago
+===================================================== */
 router.post("/webhook/mercadopago", async (req, res) => {
     try {
+        // ⚙️ Filtra chamadas de teste ou vazias
+        if (!req.body || Object.keys(req.body).length === 0) {
+            console.log("⚪ Webhook MP vazio, ignorado.");
+            return res.sendStatus(200);
+        }
+
         const { id, type } = req.body;
 
-        if (type === "payment" && id) {
-            // 📡 Consulta os detalhes do pagamento no Mercado Pago
-            const pagamento = await obterPagamento(id);
+        if (type !== "payment" || !id) {
+            console.log("⚪ Webhook MP sem dados relevantes, ignorado.");
+            return res.sendStatus(200);
+        }
 
-            // 📎 Recupera o faturaId que foi salvo no metadata ou external_reference
-            const faturaId = pagamento.metadata?.faturaId || pagamento.external_reference;
+        // 🔍 Consulta os detalhes do pagamento
+        const pagamento = await obterPagamento(id);
+        const faturaId = pagamento.metadata?.faturaId || pagamento.external_reference;
 
-            if (pagamento.status === "approved" && faturaId) {
-                // 💰 Atualiza a fatura no Firestore
-                const faturaRef = db.collection("faturas").doc(faturaId);
-                await faturaRef.update({
-                    status: "pago",
-                    pagoEm: new Date(),
-                    mp_payment_id: id,
-                });
+        if (pagamento.status !== "approved" || !faturaId) {
+            console.log(`ℹ️ Pagamento não aprovado (${pagamento.status}) ou sem faturaId.`);
+            return res.sendStatus(200);
+        }
 
-                // 👤 Atualiza o usuário para liberar acesso
-                const faturaSnap = await faturaRef.get();
-                const faturaData = faturaSnap.data();
+        // ⚙️ Inicializa Firestore só agora
+        const db = getDb();
 
-                if (faturaData?.userId) {
-                    const vencimento = calcularVencimento(faturaData.plano);
-                    await db.collection("usuarios").doc(faturaData.userId).set({
+        const faturaRef = db.collection("faturas").doc(faturaId);
+        const faturaSnap = await faturaRef.get();
+
+        // 🚫 Evita retrabalho em fatura já paga
+        if (faturaSnap.exists && faturaSnap.data()?.status === "pago") {
+            console.log(`⚪ Fatura ${faturaId} já processada, ignorando retry.`);
+            return res.sendStatus(200);
+        }
+
+        // ✅ Atualiza fatura
+        await faturaRef.set(
+            {
+                status: "pago",
+                pagoEm: new Date(),
+                mp_payment_id: id,
+            },
+            { merge: true }
+        );
+
+        // 👤 Atualiza usuário vinculado
+        const faturaData = faturaSnap.data();
+        if (faturaData?.userId) {
+            const vencimento = calcularVencimento(faturaData.plano);
+            await db
+                .collection("usuarios")
+                .doc(faturaData.userId)
+                .set(
+                    {
                         status: "pago",
                         plano: faturaData.plano,
                         valorPlano: faturaData.valor,
                         dataPagamento: new Date(),
                         dataVencimento: vencimento,
-                    }, { merge: true });
-                }
-
-                console.log(`✅ Pagamento confirmado via MP! Fatura: ${faturaId}`);
-            }
+                    },
+                    { merge: true }
+                );
         }
 
-        // ⚡ O MP exige resposta rápida
+        console.log(`✅ Pagamento confirmado via Mercado Pago! Fatura: ${faturaId}`);
         res.sendStatus(200);
     } catch (err) {
-        console.error("❌ Erro no webhook Mercado Pago:", err);
-        res.sendStatus(500);
+        console.error("❌ Erro no webhook Mercado Pago:", err.message);
+        res.sendStatus(200); // MP só precisa de 200 pra parar retry
     }
 });
 
-
-// 🧭 Webhook PIX
+/* =====================================================
+   💰 Webhook PIX
+===================================================== */
 router.post("/webhook/pix", async (req, res) => {
     try {
+        // Ignora chamadas vazias
+        if (!req.body || Object.keys(req.body).length === 0) {
+            console.log("⚪ Webhook PIX vazio, ignorado.");
+            return res.sendStatus(200);
+        }
+
         const { txid, status } = req.body;
+        if (!txid) {
+            console.log("⚠️ Webhook PIX sem txid, ignorado.");
+            return res.sendStatus(200);
+        }
 
         console.log("📬 Webhook PIX recebido:", req.body);
 
-        if (!txid) {
-            return res.status(400).json({ error: "txid ausente" });
-        }
-
-        // 🔍 Busca fatura pelo txid
+        const db = getDb();
         const snapshot = await db.collection("faturas").where("txid", "==", txid).get();
 
         if (snapshot.empty) {
             console.log(`⚠️ Nenhuma fatura encontrada para txid ${txid}`);
-            return res.status(200).send("OK (fatura não encontrada)");
+            return res.sendStatus(200);
         }
 
         const faturaDoc = snapshot.docs[0];
@@ -95,41 +143,48 @@ router.post("/webhook/pix", async (req, res) => {
         const faturaData = faturaDoc.data();
 
         if (status === "approved") {
-            // ✅ Marca a fatura como paga
-            await db.collection("faturas").doc(faturaId).update({
-                status: "pago",
-                pagoEm: new Date(),
-                pixPaymentId: txid,
-            });
+            // ✅ Marca fatura como paga
+            await db.collection("faturas").doc(faturaId).set(
+                {
+                    status: "pago",
+                    pagoEm: new Date(),
+                    pixPaymentId: txid,
+                },
+                { merge: true }
+            );
 
             // 👤 Atualiza usuário vinculado
             if (faturaData.userId) {
                 const vencimento = calcularVencimento(faturaData.plano);
-
-                await db.collection("usuarios").doc(faturaData.userId).set({
-                    status: "pago",
-                    plano: faturaData.plano,
-                    valorPlano: faturaData.valor,
-                    dataPagamento: new Date(),
-                    dataVencimento: vencimento,
-                }, { merge: true });
+                await db.collection("usuarios").doc(faturaData.userId).set(
+                    {
+                        status: "pago",
+                        plano: faturaData.plano,
+                        valorPlano: faturaData.valor,
+                        dataPagamento: new Date(),
+                        dataVencimento: vencimento,
+                    },
+                    { merge: true }
+                );
             }
 
             console.log(`✅ Pagamento PIX confirmado! Fatura: ${faturaId}`);
         } else {
-            // Se cancelado, expirado, etc.
-            await db.collection("faturas").doc(faturaId).update({
-                status: status || "desconhecido",
-                updatedAt: new Date(),
-            });
+            await db.collection("faturas").doc(faturaId).set(
+                {
+                    status: status || "desconhecido",
+                    updatedAt: new Date(),
+                },
+                { merge: true }
+            );
 
             console.log(`ℹ️ Fatura ${faturaId} atualizada com status: ${status}`);
         }
 
         res.sendStatus(200);
     } catch (err) {
-        console.error("❌ Erro no webhook PIX:", err);
-        res.sendStatus(500);
+        console.error("❌ Erro no webhook PIX:", err.message);
+        res.sendStatus(200);
     }
 });
 
