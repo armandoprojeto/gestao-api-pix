@@ -33,7 +33,7 @@ app.use(
     cors({
         origin: [
             'http://localhost:3000',
-            'https://gestaobancar.vercel.app',
+            'https://www.bancacontrol.com.br',
         ],
         methods: ['GET', 'POST', 'OPTIONS'],
         allowedHeaders: ['Content-Type', 'Authorization'],
