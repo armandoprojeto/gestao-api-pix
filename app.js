@@ -49,7 +49,7 @@ app.use((req, res, next) => {
     const inicio = Date.now();
     res.on('finish', () => {
         console.log(
-            `[req] ${req.method} ${req.originalUrl} -> ${res.statusCode} (${Date.now() - inicio}ms)`,
+            `[req] ${req.method} ${req.originalUrl} -> ${res.statusCode} (${Date.now() - inicio}ms)`
         );
     });
     next();
@@ -67,7 +67,6 @@ async function autenticarFirebase(req, res, next) {
 
         const token = authHeader.split(' ')[1];
 
-        // 🔍 Log para depuração
         console.log('[auth] Token recebido:', token.substring(0, 20) + '...');
 
         const decoded = await admin.auth().verifyIdToken(token);
@@ -129,24 +128,31 @@ app.post('/api/pix', autenticarFirebase, async (req, res) => {
 });
 
 //
-// 📡 Consultar status PIX (com autenticação)
+// 📡 Consultar status PIX (COM CORREÇÃO DE CACHE)
 //
 app.get('/pix/status/:paymentId', autenticarFirebase, async (req, res) => {
     try {
         const { paymentId } = req.params;
         console.log(`🔍 Consultando status do pagamento: ${paymentId}`);
 
+        // ⚠️ CORREÇÃO CRÍTICA — SEM CACHE
+        res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+        res.setHeader("Pragma", "no-cache");
+        res.setHeader("Expires", "0");
+        res.removeHeader("ETag");
+
         const pay = await obterPagamento(paymentId);
 
-        res.json({
+        return res.status(200).json({
             ok: true,
             status: pay.status,
             detail: pay.status_detail,
             data: pay,
         });
+
     } catch (e) {
         console.error('[pix/status] erro:', e.message);
-        res.status(400).json({ ok: false, msg: e.message });
+        return res.status(400).json({ ok: false, msg: e.message });
     }
 });
 
@@ -155,7 +161,6 @@ app.get('/pix/status/:paymentId', autenticarFirebase, async (req, res) => {
 //
 app.post('/webhook/mercadopago', async (req, res) => {
     try {
-        // MP novo (JSON) ou legado (query)
         const type = req.body?.type || req.query?.type || req.query?.topic;
         const paymentId =
             req.body?.data?.id ||
@@ -175,7 +180,6 @@ app.post('/webhook/mercadopago', async (req, res) => {
 
                 console.log(`✅ Pagamento aprovado | Fatura: ${faturaId} | Valor: R$${valorPago}`);
 
-                // Atualiza fatura
                 await db.collection('faturas').doc(faturaId).set({
                     status: 'pago',
                     paymentId: pay.id,
@@ -183,7 +187,6 @@ app.post('/webhook/mercadopago', async (req, res) => {
                     aprovadoEm: new Date(pay.date_approved),
                 }, { merge: true });
 
-                // Atualiza usuário
                 const faturaSnap = await db.collection('faturas').doc(faturaId).get();
                 const faturaData = faturaSnap.data();
                 const userId = faturaData?.userId;
@@ -211,7 +214,7 @@ app.post('/webhook/mercadopago', async (req, res) => {
         res.sendStatus(200);
     } catch (e) {
         console.error('[webhook] erro:', e.message);
-        res.sendStatus(200); // MP só precisa de 200 para parar retries
+        res.sendStatus(200);
     }
 });
 
